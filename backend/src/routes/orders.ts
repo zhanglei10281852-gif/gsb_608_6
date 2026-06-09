@@ -153,7 +153,7 @@ router.post(
         status: { $ne: "cancelled" },
       });
 
-      if (existingOrders > canteen.dailyCapacity) {
+      if (existingOrders >= canteen.dailyCapacity) {
         return res
           .status(400)
           .json({ message: "该助餐点当日此餐次已达最大供餐能力" });
@@ -238,9 +238,7 @@ router.patch(
         order.confirmedAt = new Date();
       }
 
-      if (status === "completed") {
-        order.completedAt = new Date();
-
+      if (status === "completed" && order.status !== "completed") {
         const elderly = await Elderly.findById(order.elderlyId);
         if (elderly) {
           const subsidy = calculateSubsidy(elderly, order.mealPrice);
@@ -250,6 +248,22 @@ router.patch(
             orderId: order._id,
           });
           if (!existingRecord) {
+            let quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
+            if (!quota) {
+              quota = new MonthlySubsidyQuota({
+                month: monthKey,
+                totalQuota: config.monthlySubsidyQuota,
+                usedAmount: 0,
+                remainingAmount: config.monthlySubsidyQuota,
+              });
+            }
+
+            if (quota.remainingAmount < subsidy.totalSubsidy) {
+              return res
+                .status(400)
+                .json({ message: "本月补贴额度不足，无法办结该订单" });
+            }
+
             const subsidyRecord = new SubsidyRecord({
               orderId: order._id,
               elderlyId: order.elderlyId,
@@ -266,16 +280,6 @@ router.patch(
             });
             await subsidyRecord.save();
 
-            let quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
-            if (!quota) {
-              quota = new MonthlySubsidyQuota({
-                month: monthKey,
-                totalQuota: config.monthlySubsidyQuota,
-                usedAmount: 0,
-                remainingAmount: config.monthlySubsidyQuota,
-              });
-            }
-
             quota.usedAmount += subsidy.totalSubsidy;
             quota.remainingAmount = quota.totalQuota - quota.usedAmount;
             if (quota.remainingAmount <= 0) {
@@ -284,6 +288,29 @@ router.patch(
             }
             await quota.save();
           }
+        }
+
+        order.completedAt = new Date();
+      }
+
+      if (status === "cancelled" && order.status === "completed") {
+        const monthKey = getMonthKey(order.mealDate);
+        const subsidyRecord = await SubsidyRecord.findOne({
+          orderId: order._id,
+        });
+
+        if (subsidyRecord) {
+          const quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
+          if (quota) {
+            quota.usedAmount -= subsidyRecord.totalSubsidy;
+            quota.remainingAmount = quota.totalQuota - quota.usedAmount;
+            if (quota.remainingAmount > 0) {
+              quota.status = "active";
+            }
+            await quota.save();
+          }
+
+          await SubsidyRecord.deleteOne({ _id: subsidyRecord._id });
         }
       }
 
@@ -343,6 +370,27 @@ router.delete(
       const order = await Order.findById(req.params.id);
       if (!order) {
         return res.status(404).json({ message: "订单不存在" });
+      }
+
+      if (order.status === "completed") {
+        const monthKey = getMonthKey(order.mealDate);
+        const subsidyRecord = await SubsidyRecord.findOne({
+          orderId: order._id,
+        });
+
+        if (subsidyRecord) {
+          const quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
+          if (quota) {
+            quota.usedAmount -= subsidyRecord.totalSubsidy;
+            quota.remainingAmount = quota.totalQuota - quota.usedAmount;
+            if (quota.remainingAmount > 0) {
+              quota.status = "active";
+            }
+            await quota.save();
+          }
+
+          await SubsidyRecord.deleteOne({ _id: subsidyRecord._id });
+        }
       }
 
       order.status = "cancelled";
