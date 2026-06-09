@@ -30,16 +30,28 @@ export function calculateSubsidy(
   let baseSubsidy = SUBSIDY_RATES[elderly.subsidyCategory];
   let seniorSubsidy = 0;
 
-  if (elderly.age >= SENIOR_AGE_THRESHOLD) {
+  if (elderly.hasSeniorSubsidy) {
     seniorSubsidy = SENIOR_SUBSIDY;
   }
 
   let totalSubsidy = baseSubsidy + seniorSubsidy;
-  let selfPayAmount = mealPrice - totalSubsidy;
+
+  // 补贴最多补到餐价，自付金额不应小于 0
+  if (totalSubsidy > mealPrice) {
+    const overflow = totalSubsidy - mealPrice;
+    // 优先削减高龄补贴，其次削减基础补贴，确保两项都不为负
+    const seniorReduce = Math.min(seniorSubsidy, overflow);
+    seniorSubsidy -= seniorReduce;
+    const remainingOverflow = overflow - seniorReduce;
+    baseSubsidy -= remainingOverflow;
+    totalSubsidy = baseSubsidy + seniorSubsidy;
+  }
+
+  const selfPayAmount = Math.max(mealPrice - totalSubsidy, 0);
 
   return {
-    baseSubsidy: Math.min(baseSubsidy, totalSubsidy),
-    seniorSubsidy: totalSubsidy > baseSubsidy ? totalSubsidy - baseSubsidy : 0,
+    baseSubsidy,
+    seniorSubsidy,
     totalSubsidy,
     selfPayAmount,
   };
