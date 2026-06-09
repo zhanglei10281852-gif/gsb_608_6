@@ -30,11 +30,14 @@ export function calculateSubsidy(
   let baseSubsidy = SUBSIDY_RATES[elderly.subsidyCategory];
   let seniorSubsidy = 0;
 
-  if (elderly.age >= SENIOR_AGE_THRESHOLD) {
+  if (elderly.hasSeniorSubsidy) {
     seniorSubsidy = SENIOR_SUBSIDY;
   }
 
   let totalSubsidy = baseSubsidy + seniorSubsidy;
+  if (totalSubsidy > mealPrice) {
+    totalSubsidy = mealPrice;
+  }
   let selfPayAmount = mealPrice - totalSubsidy;
 
   return {
