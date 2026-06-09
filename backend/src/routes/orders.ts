@@ -153,7 +153,7 @@ router.post(
         status: { $ne: "cancelled" },
       });
 
-      if (existingOrders > canteen.dailyCapacity) {
+      if (existingOrders >= canteen.dailyCapacity) {
         return res
           .status(400)
           .json({ message: "该助餐点当日此餐次已达最大供餐能力" });
@@ -170,6 +170,12 @@ router.post(
           usedAmount: 0,
           remainingAmount: config.monthlySubsidyQuota,
         });
+      }
+
+      if (quota.remainingAmount < subsidy.totalSubsidy) {
+        return res
+          .status(400)
+          .json({ message: "当月补贴额度已不足，无法下单" });
       }
 
       const orderNo = generateOrderNo();
@@ -250,6 +256,22 @@ router.patch(
             orderId: order._id,
           });
           if (!existingRecord) {
+            let quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
+            if (!quota) {
+              quota = new MonthlySubsidyQuota({
+                month: monthKey,
+                totalQuota: config.monthlySubsidyQuota,
+                usedAmount: 0,
+                remainingAmount: config.monthlySubsidyQuota,
+              });
+            }
+
+            if (quota.remainingAmount < subsidy.totalSubsidy) {
+              return res
+                .status(400)
+                .json({ message: "当月补贴额度已不足，无法办结" });
+            }
+
             const subsidyRecord = new SubsidyRecord({
               orderId: order._id,
               elderlyId: order.elderlyId,
@@ -265,16 +287,6 @@ router.patch(
               settled: true,
             });
             await subsidyRecord.save();
-
-            let quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
-            if (!quota) {
-              quota = new MonthlySubsidyQuota({
-                month: monthKey,
-                totalQuota: config.monthlySubsidyQuota,
-                usedAmount: 0,
-                remainingAmount: config.monthlySubsidyQuota,
-              });
-            }
 
             quota.usedAmount += subsidy.totalSubsidy;
             quota.remainingAmount = quota.totalQuota - quota.usedAmount;
@@ -343,6 +355,14 @@ router.delete(
       const order = await Order.findById(req.params.id);
       if (!order) {
         return res.status(404).json({ message: "订单不存在" });
+      }
+
+      if (order.status === "completed") {
+        return res.status(400).json({ message: "已办结订单不可取消" });
+      }
+
+      if (order.status === "cancelled") {
+        return res.status(400).json({ message: "订单已取消，请勿重复操作" });
       }
 
       order.status = "cancelled";
