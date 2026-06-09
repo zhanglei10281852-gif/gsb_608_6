@@ -27,19 +27,27 @@ export function calculateSubsidy(
   elderly: IElderly,
   mealPrice: number,
 ): SubsidyCalculation {
-  let baseSubsidy = SUBSIDY_RATES[elderly.subsidyCategory];
   let seniorSubsidy = 0;
 
-  if (elderly.age >= SENIOR_AGE_THRESHOLD) {
-    seniorSubsidy = SENIOR_SUBSIDY;
+  if (elderly.hasSeniorSubsidy) {
+    seniorSubsidy = Math.min(SENIOR_SUBSIDY, mealPrice);
   }
+
+  const rawBaseSubsidy = SUBSIDY_RATES[elderly.subsidyCategory];
+  let baseSubsidy = Math.min(rawBaseSubsidy, mealPrice - seniorSubsidy);
 
   let totalSubsidy = baseSubsidy + seniorSubsidy;
   let selfPayAmount = mealPrice - totalSubsidy;
 
+  if (selfPayAmount < 0) {
+    selfPayAmount = 0;
+    totalSubsidy = mealPrice;
+    baseSubsidy = totalSubsidy - seniorSubsidy;
+  }
+
   return {
-    baseSubsidy: Math.min(baseSubsidy, totalSubsidy),
-    seniorSubsidy: totalSubsidy > baseSubsidy ? totalSubsidy - baseSubsidy : 0,
+    baseSubsidy,
+    seniorSubsidy,
     totalSubsidy,
     selfPayAmount,
   };
