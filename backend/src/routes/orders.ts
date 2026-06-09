@@ -153,7 +153,7 @@ router.post(
         status: { $ne: "cancelled" },
       });
 
-      if (existingOrders > canteen.dailyCapacity) {
+      if (existingOrders >= canteen.dailyCapacity) {
         return res
           .status(400)
           .json({ message: "该助餐点当日此餐次已达最大供餐能力" });
@@ -170,6 +170,16 @@ router.post(
           usedAmount: 0,
           remainingAmount: config.monthlySubsidyQuota,
         });
+      }
+
+      // 月度补贴额度校验：本单补贴 + 已用 不得超过总额度
+      if (
+        quota.status === "exhausted" ||
+        quota.usedAmount + subsidy.totalSubsidy > quota.totalQuota
+      ) {
+        return res
+          .status(400)
+          .json({ message: "本月补贴额度已不足，无法下单" });
       }
 
       const orderNo = generateOrderNo();
@@ -232,15 +242,14 @@ router.patch(
         return res.status(403).json({ message: "无权操作此订单" });
       }
 
-      order.status = status;
-
-      if (status === "confirmed") {
-        order.confirmedAt = new Date();
+      // 已办结的订单不允许再被取消或修改为其他状态
+      if (order.status === "completed" && status !== "completed") {
+        return res
+          .status(400)
+          .json({ message: "订单已办结，不允许再变更状态" });
       }
 
       if (status === "completed") {
-        order.completedAt = new Date();
-
         const elderly = await Elderly.findById(order.elderlyId);
         if (elderly) {
           const subsidy = calculateSubsidy(elderly, order.mealPrice);
@@ -250,6 +259,26 @@ router.patch(
             orderId: order._id,
           });
           if (!existingRecord) {
+            let quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
+            if (!quota) {
+              quota = new MonthlySubsidyQuota({
+                month: monthKey,
+                totalQuota: config.monthlySubsidyQuota,
+                usedAmount: 0,
+                remainingAmount: config.monthlySubsidyQuota,
+              });
+            }
+
+            // 办结环节再次校验额度，防止超发
+            if (
+              quota.status === "exhausted" ||
+              quota.usedAmount + subsidy.totalSubsidy > quota.totalQuota
+            ) {
+              return res
+                .status(400)
+                .json({ message: "本月补贴额度已不足，无法办结订单" });
+            }
+
             const subsidyRecord = new SubsidyRecord({
               orderId: order._id,
               elderlyId: order.elderlyId,
@@ -266,16 +295,6 @@ router.patch(
             });
             await subsidyRecord.save();
 
-            let quota = await MonthlySubsidyQuota.findOne({ month: monthKey });
-            if (!quota) {
-              quota = new MonthlySubsidyQuota({
-                month: monthKey,
-                totalQuota: config.monthlySubsidyQuota,
-                usedAmount: 0,
-                remainingAmount: config.monthlySubsidyQuota,
-              });
-            }
-
             quota.usedAmount += subsidy.totalSubsidy;
             quota.remainingAmount = quota.totalQuota - quota.usedAmount;
             if (quota.remainingAmount <= 0) {
@@ -285,6 +304,14 @@ router.patch(
             await quota.save();
           }
         }
+
+        order.completedAt = new Date();
+      }
+
+      order.status = status;
+
+      if (status === "confirmed") {
+        order.confirmedAt = new Date();
       }
 
       await order.save();
@@ -343,6 +370,15 @@ router.delete(
       const order = await Order.findById(req.params.id);
       if (!order) {
         return res.status(404).json({ message: "订单不存在" });
+      }
+
+      // 已办结的订单不允许被取消（补贴已发、已用额度已结，强制不可逆）
+      if (order.status === "completed") {
+        return res.status(400).json({ message: "订单已办结，不允许取消" });
+      }
+
+      if (order.status === "cancelled") {
+        return res.status(400).json({ message: "订单已取消" });
       }
 
       order.status = "cancelled";
